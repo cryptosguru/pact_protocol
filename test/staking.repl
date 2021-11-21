@@ -1,0 +1,233 @@
+(env-data
+{ "admin-keyset": ["admin"]
+, "account1-keyset": ["account1"]
+, "account2-keyset": ["account2"]
+, "account3-keyset": ["account3"]
+, "account-bigspender-keyset": ["account-bigspender"]
+, "writer-keyset": ["writer"]
+, "reader-keyset": ["reader"]
+, "consumer-keyset": ["consumer"]
+})
+
+(env-keys ["admin"])
+
+(begin-tx "staking.repl - load contracts")
+(load "../contracts/fungible-v1.pact")
+(load "../contracts/stablecoin-example.pact")
+(load "../contracts/finprint-token.pact")
+(load "../contracts/finprint.pact")
+(load "./constants.pact")
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Initialize token contract and set up balances
+
+(begin-tx)
+
+(stablecoin-example.create-account 'account1 (read-keyset 'account1-keyset))
+(stablecoin-example.create-account 'account2 (read-keyset 'account2-keyset))
+(stablecoin-example.create-account 'account3 (read-keyset 'account3-keyset))
+(stablecoin-example.create-account 'account-bigspender (read-keyset 'account-bigspender-keyset))
+
+(test-capability (stablecoin-example.CREDIT 'writer))
+(test-capability (stablecoin-example.CREDIT 'reader))
+(test-capability (stablecoin-example.CREDIT 'account1))
+(test-capability (stablecoin-example.CREDIT 'account2))
+(test-capability (stablecoin-example.CREDIT 'account3))
+(stablecoin-example.credit 'writer (read-keyset 'writer-keyset) 10000.0)
+(stablecoin-example.credit 'reader (read-keyset 'reader-keyset) 10000.0)
+(stablecoin-example.credit 'account1 (read-keyset 'account1-keyset) 100000.0)
+(stablecoin-example.credit 'account2 (read-keyset 'account2-keyset) 100000.0)
+(stablecoin-example.credit 'account3 (read-keyset 'account3-keyset) 100000.0)
+
+(finprint-token.initialize)
+
+(test-capability (finprint-token.CREDIT 'account1))
+(test-capability (finprint-token.CREDIT 'account2))
+(test-capability (finprint-token.CREDIT 'account3))
+(test-capability (finprint-token.CREDIT 'account-bigspender))
+(finprint-token.credit 'account1 (read-keyset 'account1-keyset) 2000000.0)
+(finprint-token.credit 'account2 (read-keyset 'account2-keyset) 2000000.0)
+(finprint-token.credit 'account3 (read-keyset 'account3-keyset) 2000000.0)
+(finprint-token.credit 'account-bigspender (read-keyset 'account-bigspender-keyset) 100.0)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: create-stake and get stake
+
+(begin-tx)
+(use finprint)
+(test-capability (INTERNAL))
+
+(env-chain-data { "block-time": (time "1970-01-01T00:00:00Z") })
+
+(initialize)
+
+;; TODO: Should be possible with env-sigs instead of test-capability, but seems to be a Pact bug?
+;; (env-sigs [{"key": "account2", "caps": [(finprint-token.TRANSFER 'account2 'account2-stake 1000001.0)]}])
+(env-keys ["account2"])
+(test-capability (finprint-token.TRANSFER 'account2 'account2-stake 1000001.0))
+(expect
+  "#create-stake: Creates stake when account owner calls it."
+  ["Stake created." 999999.0]
+  [
+    (create-stake 'account2 'account2 'account2-stake 1000001.0)
+    (finprint-token.get-balance 'account2)
+  ]
+)
+
+;; (env-sigs [{"key": "account2", "caps": [(finprint-token.TRANSFER 'account2 'account2-stake 1000000.0)]}])
+(expect-failure
+  "#create-stake: Cannot create a stake with the same ID as another stake."
+  "row found for key"
+  (create-stake 'account2 'account2 'account2-stake 1000000.0)
+)
+
+(expect-failure
+  "#get-stake: Fails if stake doesn't exist."
+  "row not found"
+  (get-stake 'account1)
+)
+
+(expect
+  "#get-stake: Returns staked amount."
+  1000001.0
+  (get-stake 'account2)
+)
+
+(env-sigs [{"key": "account2", "caps": [(finprint-token.TRANSFER 'account1 'account1-stake-failure 100.0)]}])
+(expect-failure
+  "#create-stake: Only the account owner can create a stake with that account."
+  "Keyset failure"
+  (create-stake 'account1 'account1 'account1-stake-failure 100.0)
+)
+
+;; (env-sigs [{"key": "account-bigspender", "caps": [(finprint-token.TRANSFER 'account-bigspender 'account-bigspender-stake-failure 999.0)]}])
+(env-keys ["account-bigspender"])
+(test-capability (finprint-token.TRANSFER 'account-bigspender 'account-bigspender-stake-failure 999.0))
+(expect-failure
+  "#create-stake: Cannot create a stake larger than token owned."
+  "Insufficient funds."
+  (create-stake 'account-bigspender 'account-bigspender 'account-bigspender-stake-failure 999.0)
+)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: allow-withdraw-stake and decrease-stake
+
+(begin-tx)
+(use finprint)
+(test-capability (INTERNAL))
+
+(env-keys ["writer"])
+(create-lockbox
+  'lockbox-id-1
+  'v1
+  1
+  'writer
+  (read-keyset 'consumer-keyset)
+  123.0
+  "mock-secret-shares-cid"
+  ['account2]
+  ['mock-hash]
+)
+
+(env-keys ["consumer"])
+(add-reader 'lockbox-id-1 'reader)
+
+(env-keys ["account2"])
+(test-capability (stablecoin-example.TRANSFER 'account2 'ld2 1230.0))
+(create-lockbox-deposit 'lockbox-id-1 'account2 'ld2)
+(acknowledge-share 'lockbox-id-1 'v1 'account2)
+
+;; TODO: Should be possible with env-sigs instead of test-capability, but seems to be a Pact bug?
+;;
+;; (env-sigs [
+;;   {"key": "reader", "caps": []}
+;;   {"key": "reader", "caps": [(finprint-token.TRANSFER 'reader ESCROW_ACCOUNT_ID 123.0)]}
+;; ])
+
+(env-keys ["reader"])
+(test-capability (stablecoin-example.TRANSFER 'reader ESCROW_ACCOUNT_ID 123.0))
+(open-request
+  'lockbox-id-1
+  'request-id-1
+  'reader
+  123.0
+  constants.request-public-key
+)
+
+(expect
+  "#allow-withdraw-stake: Does not allow unstaking if node is part of sharing group."
+  false
+  (allow-withdraw-stake 'account2)
+)
+
+;; TODO: Same as above.
+(env-keys ["account2"])
+(test-capability (finprint.WITHDRAW_STAKE 'account2))
+(test-capability (finprint-token.TRANSFER 'account2-stake 'account2 1000002.0))
+(expect
+  "#decrease-stake: Allows group members to decrease stake if resulting stake is above threshold."
+  ["Stake decreased." 1000000.0]
+  [
+    (decrease-stake 'account2 'account2 1.0)
+    (finprint-token.get-balance 'account2)
+  ]
+)
+
+(expect-failure
+  "#decrease-stake: Doesn't allow group members to decrease stake if resulting stake is below threshold."
+  "Cannot decrease stake"
+  (decrease-stake 'account2 'account2 2.0)
+)
+
+;; (env-sigs [{"key": "account3", "caps": [(finprint-token.TRANSFER 'account3 'account3-stake 1000000.0)]}])
+(env-keys ["account3"])
+(test-capability (finprint-token.TRANSFER 'account3 'account3-stake 1000000.0))
+(create-stake 'account3 'account3 'account3-stake 1000000.0)
+
+(env-keys ["writer"])
+(update-lockbox
+  'lockbox-id-1
+  'v2
+  1
+  123.0
+  "mock-secret-shares-cid"
+  ['account3]
+  ['mock-hash]
+)
+
+(env-keys ["account3"])
+(test-capability (stablecoin-example.TRANSFER 'account3 'ld3 1230.0))
+(create-lockbox-deposit 'lockbox-id-1 'account3 'ld3)
+(acknowledge-share 'lockbox-id-1 'v2 'account3)
+
+(env-chain-data { "block-time": (time "1971-01-01T00:00:00Z") })
+(expect
+  "#allow-withdraw-stake: Allows unstaking if node not part of sharing group and no recent open requests."
+  true
+  (allow-withdraw-stake 'account2)
+)
+
+;; Relies on managed capabilies acquired above.
+(env-keys ["account2"])
+(expect
+  "#decrease-stake: Transfers all stake back for nodes allowed to unstake."
+  ["Stake decreased." 0.0 2000000.0]
+  [
+    (decrease-stake 'account2 'account2 1000000.0)
+    (get-stake 'account2)
+    (finprint-token.get-balance 'account2)
+  ]
+)
+
+(expect-failure
+  "#decrease-stake: Doesn't allow an account to unstake more staked token than it has."
+  "Insufficient funds."
+  (decrease-stake 'account2 'account2 1.0)
+)
+
+(commit-tx)

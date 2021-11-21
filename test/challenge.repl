@@ -1,0 +1,399 @@
+(env-data
+{ "admin-keyset": ["admin"]
+, "writer-keyset": ["writer"]
+, "reader-keyset": ["reader"]
+, "consumer-keyset": ["consumer"]
+, "sharing-node-1-keyset": ["sharing-node-1"]
+, "sharing-node-2-keyset": ["sharing-node-2"]
+})
+
+(env-keys ["admin"])
+
+(begin-tx "challenge.repl - load contracts")
+(load "../contracts/fungible-v1.pact")
+(load "../contracts/stablecoin-example.pact")
+(load "../contracts/finprint-token.pact")
+(load "../contracts/finprint.pact")
+(load "./constants.pact")
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Create and Fund Accounts
+
+(begin-tx)
+
+(stablecoin-example.create-account 'writer (read-keyset 'writer-keyset))
+(stablecoin-example.create-account 'sharing-node-1 (read-keyset 'sharing-node-1-keyset))
+(stablecoin-example.create-account 'sharing-node-2 (read-keyset 'sharing-node-2-keyset))
+
+(test-capability (stablecoin-example.CREDIT 'reader))
+(test-capability (stablecoin-example.CREDIT 'sharing-node-1))
+(test-capability (stablecoin-example.CREDIT 'sharing-node-2))
+(stablecoin-example.credit 'reader (read-keyset 'reader-keyset) 10000.0)
+(stablecoin-example.credit 'sharing-node-1 (read-keyset 'sharing-node-1-keyset) 10000.0)
+(stablecoin-example.credit 'sharing-node-2 (read-keyset 'sharing-node-2-keyset) 10000.0)
+
+(finprint-token.initialize)
+
+(finprint-token.create-account 'reader (read-keyset 'reader-keyset))
+
+(test-capability (finprint-token.CREDIT 'sharing-node-1))
+(test-capability (finprint-token.CREDIT 'sharing-node-2))
+(finprint-token.credit 'sharing-node-1 (read-keyset 'sharing-node-1-keyset) 1000000.0)
+(finprint-token.credit 'sharing-node-2 (read-keyset 'sharing-node-2-keyset) 1000000.0)
+
+; Set up the sharing node stakes.
+;; TODO: Should be possible with env-sigs instead of test-capability, but seems to be a Pact bug?
+(env-keys ["sharing-node-1"])
+(test-capability (finprint-token.TRANSFER 'sharing-node-1 'sharing-node-1-stake 1000000.0))
+(finprint.create-stake 'sharing-node-1 'sharing-node-1 'sharing-node-1-stake 1000000.0)
+(env-keys ["sharing-node-2"])
+(test-capability (finprint-token.TRANSFER 'sharing-node-2 'sharing-node-2-stake 1000000.0))
+(finprint.create-stake 'sharing-node-2 'sharing-node-2 'sharing-node-2-stake 1000000.0)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: setup
+
+(begin-tx)
+(use finprint)
+(test-capability (INTERNAL))
+
+(env-chain-data { "block-time": (time "1970-01-01T00:00:00Z") })
+
+(env-keys ["admin"])
+(initialize)
+
+(env-keys ["writer"])
+(create-lockbox
+  'lockbox-id-1
+  'v1
+  1
+  'writer
+  (read-keyset 'consumer-keyset)
+  123.0
+  "mock-secret-shares-cid"
+  [constants.sharing-node-1 constants.sharing-node-2]
+  [constants.share1-hash constants.share2-hash]
+)
+
+(env-keys ["sharing-node-1"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-node-1 'sharing-ld-1 10000.0))
+(create-lockbox-deposit 'lockbox-id-1 'sharing-node-1 'sharing-ld-1)
+(acknowledge-share 'lockbox-id-1 'v1 'sharing-node-1)
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-node-2 'sharing-ld-2 10000.0))
+(create-lockbox-deposit 'lockbox-id-1 'sharing-node-2 'sharing-ld-2)
+(acknowledge-share 'lockbox-id-1 'v1 'sharing-node-2)
+
+(env-keys ["consumer"])
+(add-reader 'lockbox-id-1 'reader)
+
+(env-keys ["reader"])
+(test-capability (stablecoin-example.TRANSFER 'reader ESCROW_ACCOUNT_ID 1230.0))
+(open-request
+  'lockbox-id-1
+  'request-id-challenge-1
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-challenge-group-1
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-challenge-reader-1
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-challenge-reader-2
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-challenge-group-2
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-challenge-repeat
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-challenge-open
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-missing-1
+  'reader
+  123.0
+  constants.request-public-key
+)
+(open-request
+  'lockbox-id-1
+  'request-id-missing-2
+  'reader
+  123.0
+  constants.request-public-key
+)
+
+;; TODO: The finprint module should not require managed cap to withdraw from escrow.
+(env-keys ["sharing-node-1"])
+(test-capability (finprint.WITHDRAW_ESCROW))
+(test-capability (stablecoin-example.TRANSFER ESCROW_ACCOUNT_ID 'sharing-node-1 1230.0))
+(post-result
+  'request-id-challenge-1
+  'sharing-node-1
+  constants.share1-ciphertext
+  constants.share1-mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-group-1
+  'sharing-node-1
+  constants.share1-ciphertext
+  constants.share1-mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-reader-1
+  'sharing-node-1
+  constants.share1-ciphertext
+  "rjoNds9O9MYkAFyZdBXmnh" ; invalid mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-reader-2
+  'sharing-node-1
+  constants.share1-ciphertext
+  constants.share1-mac
+  constants.nonce ; invalid nonce
+)
+(post-result
+  'request-id-challenge-group-2
+  'sharing-node-1
+  constants.share1-ciphertext
+  constants.share1-mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-repeat
+  'sharing-node-1
+  constants.share1-ciphertext
+  constants.share1-mac
+  constants.nonce
+)
+
+;; TODO: The finprint module should not require managed cap to withdraw from escrow.
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER ESCROW_ACCOUNT_ID 'sharing-node-2 1230.0))
+(test-capability (stablecoin-example.TRANSFER ESCROW_ACCOUNT_ID 'writer 1230.0))
+(post-result
+  'request-id-challenge-1
+  'sharing-node-2
+  constants.share2-ciphertext
+  constants.share2-mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-group-1
+  'sharing-node-2
+  constants.share2-ciphertext
+  constants.share2-mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-reader-1
+  'sharing-node-2
+  "SFh9NhlS-mmSp5gFwSc5GuTvAXokEIDkoiuxIYXhgAJ8JusWIj1FBPS6zSmYfmNVkmwy" ; invalid ciphertext
+  constants.share2-mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-reader-2
+  'sharing-node-2
+  "PDAURXAhmxvzyfxqrFRNaI2BZje6AXOD1HLYbWff1XE1WLiRUm_VstTJ2upTDXNjyqTY" ; encryption of incorrect plaintext
+  "PuiSTxcCK9Rn6sKF-lOOMA" ; mac matches wrong ciphertext
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-group-2
+  'sharing-node-2
+  constants.share2-ciphertext
+  constants.share2-mac
+  constants.nonce
+)
+(post-result
+  'request-id-challenge-repeat
+  'sharing-node-2
+  constants.share2-ciphertext
+  constants.share2-mac
+  constants.nonce
+)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: challenge-invalid-result
+
+; Set up capabilities for challenge.
+;
+; TODO: Do this without test-capability. The ability for a module to acquire
+; “autonomous managed capabilities” was recently fixed in Pact.
+(begin-tx)
+(use finprint)
+(test-capability (INTERNAL))
+(test-capability (WITHDRAW_LOCKBOX_DEPOSIT 'lockbox-id-1 'sharing-node-1))
+(test-capability (WITHDRAW_LOCKBOX_DEPOSIT 'lockbox-id-1 'sharing-node-2))
+(env-keys ["sharing-node-1"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-ld-1 'reader 100000.0))
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-ld-2 'reader 100000.0))
+(env-keys ["reader"])
+
+(expect-failure
+  "#challenge-invalid-result: Reverts the challenge if key doesn't match."
+  "Invalid keypair."
+  (challenge-invalid-result 'request-id-challenge-group-1
+  "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0ec" 'sharing-node-1) ; wrong private key
+)
+
+(expect-failure
+  "#challenge-invalid-result: Sharing group wins challenge if result decrypts correctly and hash matches."
+  "Challenge failed since the posted result was valid."
+  (challenge-invalid-result 'request-id-challenge-group-2 constants.request-private-key 'sharing-node-1)
+)
+
+(expect-failure
+  "#challenge-invalid-result: Can't challenge an unopened request."
+  "row not found"
+  (challenge-invalid-result 'request-id-challenge-nonexistent constants.request-private-key 'sharing-node-1)
+)
+
+(expect-failure
+  "#challenge-invalid-result: Can't challenge if the request is not filled."
+  "row not found"
+  (challenge-invalid-result 'request-id-challenge-open constants.request-private-key 'sharing-node-1)
+)
+
+(expect
+  "#challenge-invalid-result: Reader wins challenge if a posted result fails to decrypt."
+  [
+    "Result challenged."
+    9262.0
+  ]
+  [
+    (challenge-invalid-result 'request-id-challenge-reader-1 constants.request-private-key 'sharing-node-2)
+    (stablecoin-example.get-balance 'reader)
+  ]
+)
+
+(rollback-tx)
+
+; Set up capabilities for challenge.
+;
+; TODO: Do this without test-capability. The ability for a module to acquire
+; “autonomous managed capabilities” was recently fixed in Pact.
+(begin-tx)
+(use finprint)
+(test-capability (INTERNAL))
+(test-capability (WITHDRAW_LOCKBOX_DEPOSIT 'lockbox-id-1 'sharing-node-1))
+(test-capability (WITHDRAW_LOCKBOX_DEPOSIT 'lockbox-id-1 'sharing-node-2))
+(env-keys ["sharing-node-1"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-ld-1 'reader 100000.0))
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-ld-2 'reader 100000.0))
+(env-keys ["reader"])
+
+(expect
+  "#challenge-invalid-result: Reader wins challenge if result decrypts successfully and hash doesn't match."
+  "Result challenged."
+  (challenge-invalid-result 'request-id-challenge-reader-2 constants.request-private-key 'sharing-node-2)
+)
+
+(expect-failure
+  "#challenge-invalid-result: Can't challenge an already-challenged request."
+  "was already challenged"
+  (challenge-invalid-result 'request-id-challenge-reader-2 constants.request-private-key 'sharing-node-2)
+)
+
+(rollback-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: challenge-missing-result
+
+; Set up capabilities for challenge.
+;
+; TODO: Do this without test-capability. The ability for a module to acquire
+; “autonomous managed capabilities” was recently fixed in Pact.
+(begin-tx)
+(use finprint)
+(test-capability (INTERNAL))
+(test-capability (WITHDRAW_LOCKBOX_DEPOSIT 'lockbox-id-1 'sharing-node-1))
+(test-capability (WITHDRAW_LOCKBOX_DEPOSIT 'lockbox-id-1 'sharing-node-2))
+(env-keys ["sharing-node-1"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-ld-1 'reader 100000.0))
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-ld-2 'reader 100000.0))
+(env-keys ["reader"])
+
+(expect-failure
+  "#challenge-missing-results: Fails if deadline for posting result has not expired."
+  "The deadline for posting a result has not yet passed."
+  (challenge-missing-result 'request-id-missing-1 'sharing-node-1)
+)
+
+(env-keys ["reader"])
+(env-chain-data { "block-time": (time "1971-01-01T00:00:00Z") })
+(expect-failure
+  "#challenge-missing-results: Fails if challenge window has expired."
+  "The deadline for challenging this request has passed."
+  (challenge-missing-result 'request-id-missing-1 'sharing-node-2)
+)
+
+(env-chain-data { "block-time": (time "1970-01-02T00:00:00Z") })
+(expect
+  "#challenge-missing-result: Correctly determines if group member has not posted result."
+  "Result challenged."
+  (challenge-missing-result 'request-id-missing-2 'sharing-node-1)
+)
+
+;; TODO: The finprint module should not require managed cap to withdraw from escrow.
+(env-keys ["sharing-node-2"])
+(test-capability (finprint.WITHDRAW_ESCROW))
+(test-capability (stablecoin-example.TRANSFER ESCROW_ACCOUNT_ID 'sharing-node-2 1230.0))
+(post-result 'request-id-missing-2 'sharing-node-2 constants.share2-ciphertext constants.share2-mac constants.nonce)
+
+(env-keys ["reader"])
+(expect-failure
+  "#challenge-missing-result: Fails when result has already been challenged."
+  "Result was already challenged."
+  (challenge-missing-result 'request-id-missing-2 'sharing-node-1)
+)
+
+(expect-failure
+  "#challenge-missing-result: Fails when request has been filled."
+  "Challenge failed since a result has been posted."
+  (challenge-missing-result 'request-id-missing-2 'sharing-node-2)
+)
+
+(commit-tx)

@@ -1,0 +1,290 @@
+; Test payments within the protocol.
+
+(env-data
+{ "admin-keyset": ["admin"]
+, "writer-keyset": ["writer"]
+, "reader-keyset": ["reader"]
+, "consumer-keyset": ["consumer"]
+, "sharing-node-1-keyset": ["sharing-node-1"]
+, "sharing-node-2-keyset": ["sharing-node-2"]
+})
+
+(env-keys ["admin"])
+
+(begin-tx "finprint-internal.repl - load contracts")
+(load "../contracts/fungible-v1.pact")
+(load "../contracts/stablecoin-example.pact")
+(load "../contracts/finprint-token.pact")
+(load "../contracts/finprint.pact")
+(load "./constants.pact")
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Create and Fund Accounts
+
+(begin-tx "create and fund accounts")
+
+(stablecoin-example.create-account 'writer (read-keyset 'writer-keyset))
+(stablecoin-example.create-account 'sharing-node-1 (read-keyset 'sharing-node-1-keyset))
+(stablecoin-example.create-account 'sharing-node-2 (read-keyset 'sharing-node-2-keyset))
+
+(test-capability (stablecoin-example.CREDIT 'reader))
+(test-capability (stablecoin-example.CREDIT 'sharing-node-1))
+(test-capability (stablecoin-example.CREDIT 'sharing-node-2))
+(stablecoin-example.credit 'reader (read-keyset 'reader-keyset) 10000.0)
+(stablecoin-example.credit 'sharing-node-1 (read-keyset 'sharing-node-1-keyset) 10000.0)
+(stablecoin-example.credit 'sharing-node-2 (read-keyset 'sharing-node-2-keyset) 10000.0)
+
+(finprint-token.initialize)
+
+(test-capability (finprint-token.CREDIT 'sharing-node-1))
+(test-capability (finprint-token.CREDIT 'sharing-node-2))
+(finprint-token.credit 'sharing-node-1 (read-keyset 'sharing-node-1-keyset) 1000000.0)
+(finprint-token.credit 'sharing-node-2 (read-keyset 'sharing-node-2-keyset) 1000000.0)
+
+; Set up the sharing node stakes.
+;; TODO: Should be possible with env-sigs instead of test-capability, but seems to be a Pact bug?
+(env-keys ["sharing-node-1"])
+(test-capability (finprint-token.TRANSFER 'sharing-node-1 'sharing-node-1-stake 1000000.0))
+(finprint.create-stake 'sharing-node-1 'sharing-node-1 'sharing-node-1-stake 1000000.0)
+(env-keys ["sharing-node-2"])
+(test-capability (finprint-token.TRANSFER 'sharing-node-2 'sharing-node-2-stake 1000000.0))
+(finprint.create-stake 'sharing-node-2 'sharing-node-2 'sharing-node-2-stake 1000000.0)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Set up a lockbox
+
+(begin-tx "set up a lockbox")
+(use finprint)
+(test-capability (INTERNAL))
+
+(env-keys ["admin"])
+
+(initialize)
+
+(env-keys ["writer"])
+
+(create-lockbox
+  'lockbox-id
+  'v1
+  1
+  'writer
+  (read-keyset 'consumer-keyset)
+  100.0
+  "mock-secret-shares-cid"
+  ['sharing-node-1 'sharing-node-2]
+  [constants.share1-hash constants.share2-hash]
+)
+
+(env-keys ["sharing-node-1"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-node-1 'node-ld-1 1000.0))
+(create-lockbox-deposit 'lockbox-id 'sharing-node-1 'node-ld-1)
+(acknowledge-share 'lockbox-id 'v1 'sharing-node-1)
+
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-node-2 'node-ld-2 1000.0))
+(create-lockbox-deposit 'lockbox-id 'sharing-node-2 'node-ld-2)
+(acknowledge-share 'lockbox-id 'v1 'sharing-node-2)
+
+(env-keys ["consumer"])
+
+(add-reader 'lockbox-id 'reader)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: transaction fees
+
+(begin-tx "payment unit tests")
+(use finprint)
+(test-capability (INTERNAL))
+
+(env-keys ["reader"])
+(test-capability (stablecoin-example.TRANSFER 'reader ESCROW_ACCOUNT_ID 100.0))
+
+(expect
+  "#open-request: Transfers price from reader to escrow."
+  [
+    "Request opened."
+    0.0
+    9900.0
+    9700.0
+    9700.0
+  ]
+  [
+    (open-request
+      'lockbox-id
+      'request-id
+      'reader
+      100.0
+      "mock-request-public-key"
+    )
+    (stablecoin-example.get-balance 'writer)
+    (stablecoin-example.get-balance 'reader)
+    (stablecoin-example.get-balance 'sharing-node-1)
+    (stablecoin-example.get-balance 'sharing-node-2)
+  ]
+)
+
+(env-keys ["sharing-node-1"])
+(test-capability (finprint.WITHDRAW_ESCROW))
+(test-capability (stablecoin-example.TRANSFER ESCROW_ACCOUNT_ID 'sharing-node-1 12.0))
+
+(expect
+  "#post-result: Pays the sharing node from escrow."
+  [
+    "Result posted."
+    0.0
+    9900.0
+    9712.0
+    9700.0
+  ]
+  [
+    (post-result 'request-id 'sharing-node-1 "mock-result-1" "mac" "nonce")
+    (stablecoin-example.get-balance 'writer)
+    (stablecoin-example.get-balance 'reader)
+    (stablecoin-example.get-balance 'sharing-node-1)
+    (stablecoin-example.get-balance 'sharing-node-2)
+  ]
+)
+
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER ESCROW_ACCOUNT_ID 'sharing-node-2 12.0))
+(test-capability (stablecoin-example.TRANSFER ESCROW_ACCOUNT_ID 'writer 76.0))
+
+(expect
+  "#post-result: Also pays the writer, when the last result is posted."
+  [
+    "Result posted."
+    76.0
+    9900.0
+    9712.0
+    9712.0
+  ]
+  [
+    (post-result 'request-id 'sharing-node-2 "mock-result-2" "mac" "nonce")
+    (stablecoin-example.get-balance 'writer)
+    (stablecoin-example.get-balance 'reader)
+    (stablecoin-example.get-balance 'sharing-node-1)
+    (stablecoin-example.get-balance 'sharing-node-2)
+  ]
+)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: lockbox deposits
+(begin-tx)
+(use finprint)
+(env-chain-data { "block-time": (time "1970-01-01T00:00:00Z") })
+(test-capability (INTERNAL))
+
+(env-keys ["writer"])
+(create-lockbox
+  'lockbox-id-deposit
+  'vDeposit
+  1
+  'writer
+  (read-keyset 'consumer-keyset)
+  123.0
+  "mock-secret-shares-cid"
+  [constants.sharing-node-1 constants.sharing-node-2]
+  [constants.share1-hash constants.share2-hash]
+)
+(env-keys ["consumer"])
+(add-reader 'lockbox-id-deposit 'reader)
+
+(env-keys ["sharing-node-1"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-node-1 'deposit-ld-1 10000.0))
+
+(expect
+  "#create-lockbox-deposit: Creates a deposit account with correct balance."
+  ["Lockbox deposit created." 369.0]
+  [
+    (create-lockbox-deposit 'lockbox-id-deposit 'sharing-node-1 'deposit-ld-1)
+    (stablecoin-example.get-balance 'deposit-ld-1)
+  ]
+)
+
+(acknowledge-share 'lockbox-id-deposit 'vDeposit 'sharing-node-1)
+
+(expect
+  "#allow-withdraw-lockbox-deposit: Not allowed when member has acked a share in a pending group."
+  false
+  (allow-withdraw-lockbox-deposit 'lockbox-id-deposit 'sharing-node-1)
+)
+(env-keys ["sharing-node-2"])
+(test-capability (stablecoin-example.TRANSFER 'sharing-node-2 'deposit-ld-2 10000.0))
+(create-lockbox-deposit 'lockbox-id-deposit 'sharing-node-2 'deposit-ld-2)
+(acknowledge-share 'lockbox-id-deposit 'vDeposit 'sharing-node-2)
+
+(expect-failure
+  "#withdraw-lockbox-deposit: Only deposit account owner can withdraw lockbox deposit."
+  "Keyset failure"
+  (withdraw-lockbox-deposit 'lockbox-id-deposit 'sharing-node-1)
+)
+
+(expect
+  "#allow-withdraw-lockbox-deposit: Not allowed when member is part of sharing group."
+  false
+  (allow-withdraw-lockbox-deposit 'lockbox-id-deposit 'sharing-node-1)
+)
+
+(env-keys ["reader"])
+(test-capability (stablecoin-example.TRANSFER 'reader 'FINPRINT_ESCROW 123.0))
+(open-request
+  'lockbox-id-deposit
+  'request-id-deposit-1
+  'reader
+  123.0
+  "mock-request-public-key"
+)
+
+(env-keys ["sharing-node-2"])
+(test-capability (finprint.WITHDRAW_ESCROW))
+(test-capability (stablecoin-example.TRANSFER 'FINPRINT_ESCROW 'sharing-node-2 1000.0))
+(post-result 'request-id-deposit-1 'sharing-node-2 "mock-result-2" "mac" "nonce")
+(env-keys ["sharing-node-1"])
+(test-capability (finprint.WITHDRAW_ESCROW))
+(test-capability (stablecoin-example.TRANSFER 'FINPRINT_ESCROW 'sharing-node-1 1000.0))
+(test-capability (stablecoin-example.TRANSFER 'FINPRINT_ESCROW 'writer 1000.0))
+(post-result 'request-id-deposit-1 'sharing-node-1 "mock-result-1" "mac" "nonce")
+
+(env-keys ["writer"])
+(update-lockbox
+  'lockbox-id-deposit
+  'vDeposit2
+  1
+  100.0
+  "mock-secret-shares-cid"
+  ['sharing-node-2]
+  [constants.share2-hash]
+)
+(test-capability (INTERNAL))
+(update-lockbox-current-version 'lockbox-id-deposit)
+
+(env-keys ["sharing-node-1"])
+(test-capability (WITHDRAW_LOCKBOX_DEPOSIT 'lockbox-id-deposit 'sharing-node-1))
+(test-capability (stablecoin-example.TRANSFER 'deposit-ld-1 'sharing-node-1 10000.0))
+
+
+(expect-failure
+  "#withdraw-lockbox-deposit: Cannot withdraw deposit if challengeable requests on lockbox."
+  "Cannot withdraw lockbox deposit since this node is part of a sharing group or is still subject to potential challenges."
+  (withdraw-lockbox-deposit 'lockbox-id-deposit 'sharing-node-1)
+)
+
+(env-chain-data { "block-time": (time "1971-01-01T00:00:00Z") })
+(expect
+  "#withdraw-lockbox-deposit: Can withdraw deposit if no challengeable requests on lockbox."
+  [9358.0 "Lockbox deposit withdrawn." 9727.0]
+  [
+    (stablecoin-example.get-balance 'sharing-node-1)
+    (withdraw-lockbox-deposit 'lockbox-id-deposit 'sharing-node-1)
+    (stablecoin-example.get-balance 'sharing-node-1)
+  ]
+)
+
+(commit-tx)

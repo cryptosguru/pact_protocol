@@ -1,0 +1,11 @@
+(env-data { "admin-keyset": ["admin"] })
+
+(env-keys ["admin"])
+
+(load "../contracts/fungible-v1.pact")
+(load "../contracts/stablecoin-example.pact")
+(typecheck 'stablecoin-example)
+(load "../contracts/finprint-token.pact")
+(typecheck 'finprint-token)
+(load "../contracts/finprint.pact")
+(typecheck 'finprint)

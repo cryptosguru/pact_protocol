@@ -1,0 +1,203 @@
+(env-data
+{ "admin-keyset": ["admin"]
+, "alice-keyset": ["alice"]
+, "alice-keyset-2": ["alice-2"]
+, "bob-keyset": ["bob"]
+})
+
+(begin-tx "load fungible-v1")
+(load "../contracts/fungible-v1.pact")
+(commit-tx)
+
+(begin-tx "load finprint-token")
+(load "../contracts/finprint-token.pact")
+(commit-tx)
+
+(typecheck 'finprint-token)
+(verify 'finprint-token)
+
+; --------------------------------------------------------------------------
+; Unit Tests: initialize
+
+(begin-tx)
+(use finprint-token)
+
+(env-keys ["alice"])
+
+(expect-failure
+  "#initialize: Cannot initialize if not the contract admin."
+  "Keyset failure"
+  (initialize)
+)
+
+(env-keys ["admin"])
+
+(expect
+  "#initialize: Initializes successfully."
+  [
+    "Write succeeded"
+    1000000000000000000.0
+  ]
+  [
+    (initialize)
+    (get-balance ROOT_ACCOUNT_ID)
+  ]
+)
+
+(expect-failure
+  "#initialize: Doesn't initialize again."
+  "row found for key"
+  (initialize)
+)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: transfer-create
+
+(begin-tx)
+(use finprint-token)
+
+(env-sigs [{"key": "admin", "caps": [(TRANSFER ROOT_ACCOUNT_ID 'alice-account 2000.0)]}])
+
+(expect
+  "#transfer-create: Creates an account on transfer."
+  "Write succeeded"
+  (transfer-create ROOT_ACCOUNT_ID 'alice-account (read-keyset 'alice-keyset) 1000.0)
+)
+
+(expect-failure
+  "#transfer-create: Fails if account exists and guard does not match."
+  "guards do not match"
+  (transfer-create ROOT_ACCOUNT_ID 'alice-account (read-keyset 'bob-keyset) 1000.0)
+)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: debit and credit
+
+(begin-tx)
+(use finprint-token)
+
+(expect-failure
+  "#debit: Cannot be called externally."
+  "not granted"
+  (debit ROOT_ACCOUNT_ID 1.0)
+)
+
+(expect-failure
+  "#credit: Cannot be called externally."
+  "not granted"
+  (credit ROOT_ACCOUNT_ID (read-keyset 'admin-keyset) 1.0)
+)
+
+(rollback-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: create-account
+
+(begin-tx)
+(use finprint-token)
+
+(env-keys ["alice"])
+
+(expect
+  "#create-account: Creates an account."
+  "Write succeeded"
+  (create-account 'bob-account (read-keyset 'bob-keyset))
+)
+
+(commit-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: get-balance
+
+(begin-tx)
+(use finprint-token)
+
+(expect
+  "#get-balance: Returns the expected balance."
+  1000.0
+  (get-balance 'alice-account)
+)
+
+(expect-failure
+  "#get-balance: Fail to get balance for a non-existent account."
+  "row not found"
+  (get-balance 'missing-account)
+)
+
+(rollback-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: transfer
+
+(begin-tx)
+(use finprint-token)
+
+(env-sigs [{"key": "alice", "caps": [(TRANSFER 'alice-account 'bob-account 600.0)]}])
+
+(expect
+  "#transfer: Transfers to an existing account."
+  "Write succeeded"
+  (transfer 'alice-account 'bob-account 500.0)
+)
+
+(expect-failure
+  "#transfer: Disallows negative transfer."
+  "amount must be positive"
+  (transfer 'alice-account 'bob-account -1.0)
+)
+
+(expect-failure
+  "#transfer: Disallows zero transfer."
+  "amount must be positive"
+  (transfer 'alice-account 'bob-account 0.0)
+)
+
+(expect-failure
+  "#transfer: Disallows non-integer transfer."
+  "violates minimum denomination"
+  (transfer 'alice-account 'bob-account 1.5)
+)
+
+(expect
+  "#get-balance: Returns the expected balance."
+  500.0
+  (get-balance 'alice-account)
+)
+
+(rollback-tx)
+
+; --------------------------------------------------------------------------
+; Unit Tests: rotate
+
+(begin-tx)
+(use finprint-token)
+
+(env-keys ["alice", "alice-2"])
+
+(expect
+  "#rotate: Updates the guard on an account."
+  "Write succeeded"
+  (rotate 'alice-account (read-keyset 'alice-keyset-2))
+)
+
+(env-sigs [{"key": "alice", "caps": [(TRANSFER 'alice-account 'bob-account 10.0)]}])
+
+(expect-failure
+  "#transfer: Fails from old key after rotation."
+  "Keyset failure"
+  (transfer 'alice-account 'bob-account 10.0)
+)
+
+(env-sigs [{"key": "alice-2", "caps": [(TRANSFER 'alice-account 'bob-account 10.0)]}])
+
+(expect
+  "#transfer: Succeeds from new key after rotation."
+  "Write succeeded"
+  (transfer 'alice-account 'bob-account 10.0)
+)
+
+(rollback-tx)

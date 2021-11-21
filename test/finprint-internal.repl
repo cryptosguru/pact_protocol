@@ -1,0 +1,99 @@
+; Test that internal functions cannot be called from outside the contract.
+;
+; Specifically, test the functions that would be dangerous if not protected.
+
+(env-data
+{ "admin-keyset": ["admin"]
+, "writer-keyset": ["writer"]
+, "account1-keyset": ["account1"]
+})
+
+(env-keys ["admin"])
+
+(begin-tx "finprint-internal.repl - load contracts")
+(load "../contracts/fungible-v1.pact")
+(load "../contracts/stablecoin-example.pact")
+(load "../contracts/finprint-token.pact")
+(load "../contracts/finprint.pact")
+(load "./constants.pact")
+(commit-tx)
+
+(use finprint)
+(initialize)
+
+(test-capability (finprint-token.CREDIT 'account1))
+(finprint-token.credit 'account1 (read-keyset 'account1-keyset) 1000000.0)
+
+(test-capability (stablecoin-example.CREDIT 'writer))
+(test-capability (stablecoin-example.CREDIT 'account1))
+(stablecoin-example.credit 'writer (read-keyset 'writer-keyset) 1000000.0)
+(stablecoin-example.credit 'account1 (read-keyset 'account1-keyset) 1000000.0)
+
+(env-keys ["account1"])
+(test-capability (finprint-token.TRANSFER 'account1 'account1-stake 1000000.0))
+(finprint.create-stake 'account1 'account1 'account1-stake 1000000.0)
+
+
+(env-keys ["writer"])
+(create-lockbox
+  'lockbox-id-1
+  'v1
+  1
+  'writer
+  (read-keyset 'admin-keyset)
+  123.0
+  "mock-secret-shares-cid"
+  ['account1]
+  ['mock-hash]
+)
+
+; --------------------------------------------------------------------------
+; Unit Tests
+
+(expect-failure
+  "#increment-lockbox-count: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (increment-lockbox-count 'sharing-node-account-id)
+)
+
+(expect-failure
+  "#decrement-lockbox-count: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (decrement-lockbox-count 'sharing-node-account-id)
+)
+
+(expect-failure
+  "#update-last-request-opened-at: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (update-last-request-opened-at 'lockbox-id-1 'sharing-node-account-id)
+)
+
+(expect-failure
+  "#reset-leave-lockbox: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (reset-leave-lockbox 'version-id 'sharing-node-account-id)
+)
+
+(expect-failure
+  "#mark-challenged: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (mark-challenged 'request-id 'sharing-node-account-id)
+)
+
+(expect-failure
+  "#store-share-hash: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (store-share-hash 'version-id {} true)
+)
+
+(expect-failure
+  "#update-lockbox-current-version: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (update-lockbox-current-version 'lockbox-id)
+)
+
+(expect-failure
+  "#slash: Cannot be called externally."
+  "require-capability: not granted: (finprint.INTERNAL)"
+  (slash 'request-id 'stake-account-owner-id)
+)

@@ -1,0 +1,6 @@
+dist/
+log/
+node_modules/
+.DS_Store
+.pact-history
+yarn-error.log
